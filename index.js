@@ -102,22 +102,24 @@ async function connectToWhatsApp() {
                         continue;
                     }
 
-                    // Rule 3: Must start with "post:" (case insensitive)
-                    if (!text.toLowerCase().startsWith('post:')) {
+                    // Rule 3: Must start with "post" followed by optional space and colon (case insensitive)
+                    const postPrefixMatch = text.match(/^post\s*:/i);
+                    if (!postPrefixMatch) {
                         console.log('Message does not start with "post:". Ignoring.');
                         continue;
                     }
 
-                    // Remove "post:" prefix
-                    let cleanText = text.substring(5).trim();
+                    // Remove "post:" prefix (and any following whitespace)
+                    let cleanText = text.substring(postPrefixMatch[0].length).trim();
 
                     // Parse Title, Content, and Status
                     // Expected format: "title: ... content: ... status: ..." in any order
                     // We use regex to find each part, stopping at the start of another tag or end of string.
+                    // Updated to allow spaces before colon: "title :", "content :"
                     
-                    const titleMatch = cleanText.match(/title:\s*([\s\S]*?)(?=(content:|status:|$))/i);
-                    const contentMatch = cleanText.match(/content:\s*([\s\S]*?)(?=(title:|status:|$))/i);
-                    const statusMatch = cleanText.match(/status:\s*([\s\S]*?)(?=(title:|content:|$))/i);
+                    const titleMatch = cleanText.match(/title\s*:\s*([\s\S]*?)(?=(content\s*:|status\s*:|$))/i);
+                    const contentMatch = cleanText.match(/content\s*:\s*([\s\S]*?)(?=(title\s*:|status\s*:|$))/i);
+                    const statusMatch = cleanText.match(/status\s*:\s*([\s\S]*?)(?=(title\s*:|content\s*:|$))/i);
 
                     let title = titleMatch ? titleMatch[1].trim() : '';
                     let content = contentMatch ? contentMatch[1].trim() : '';
