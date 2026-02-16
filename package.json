@@ -1,0 +1,21 @@
+{
+  "name": "whatsapp-wp-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "axios": "^1.13.5",
+    "dotenv": "^17.3.1",
+    "link-preview-js": "^3.2.0",
+    "mime-types": "^3.0.2",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
