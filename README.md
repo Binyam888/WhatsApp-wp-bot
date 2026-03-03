@@ -45,20 +45,32 @@ Delete Post	❌ Not Yet
 Multi-user Access	❌ Not Yet
 
 ⚙️ Setup
+
 1️⃣ Clone the Repository
-git clone https://github.com/yourusername/your-repo-name.git
+
+git clone https://github.com/Binyam888/WhatsApp-wp-bot.git
+
 cd your-repo-name
+
 2️⃣ Install Dependencies
+
 npm install
+
 3️⃣ Configure Environment Variables
+
 
 Create a .env file:
 
 WP_API_URL=https://yourwebsite.com/wp-json/wp/v2/posts
+
 WP_USERNAME=your-username
+
 WP_PASSWORD=your-application-password
+
 4️⃣ Start the Server
+
 node index.js
+
 
 Scan the QR code with WhatsApp and you're ready to control your WordPress posts.
 
