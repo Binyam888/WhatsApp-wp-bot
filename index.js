@@ -80,35 +80,56 @@ async function connectToWhatsApp(retryCount = 0) {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    console.log(`\n[DEBUG] Received messages.upsert event. Type: ${type}, Count: ${messages.length}`);
     if (type === "notify") {
       for (const msg of messages) {
-        if (!msg.message) continue;
+        console.log(`[DEBUG] Raw Message Key:`, JSON.stringify(msg.key));
+        if (!msg.message) {
+          console.log("[DEBUG] No message content found.");
+          continue;
+        }
 
         // Check if message is from allowed number
+        // Messages from self or linked devices sometimes use @lid in remoteJid and the actual number in remoteJidAlt
         const remoteJid = msg.key.remoteJid;
-        const senderNumber = remoteJid.replace("@s.whatsapp.net", "");
+        const remoteJidAlt = msg.key.remoteJidAlt;
+        
+        let senderNumber = "";
+        if (remoteJid && remoteJid.includes("@s.whatsapp.net")) {
+            senderNumber = remoteJid.replace("@s.whatsapp.net", "");
+        } else if (remoteJidAlt && remoteJidAlt.includes("@s.whatsapp.net")) {
+            senderNumber = remoteJidAlt.replace("@s.whatsapp.net", "");
+        } else if (remoteJid && !remoteJid.includes("@g.us")) {
+            // fallback if it's just a number without domain
+            senderNumber = remoteJid.split("@")[0];
+        }
 
         // Normalization helper
         const jidNormalizedUser = (jid) => {
+          if (!jid) return null;
           const decoded = jid.split(":")[0];
           return decoded.split("@")[0] + "@s.whatsapp.net"; // standard format
         };
 
         const myJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
         const msgRemoteJid = jidNormalizedUser(remoteJid);
+        const msgRemoteJidAlt = jidNormalizedUser(remoteJidAlt);
 
-        // Rule 1: Allow if from allowed number (someone sending TO bot)
-        // Rule 2: Allow if from ME (fromMe=true) sending TO MYSELF (remoteJid=myJid)
-        // The user specifically asked: "if i send message to myself"
+        // Rule 1: Allow if from allowed number
+        // Rule 2: Allow if from ME (fromMe=true) sending TO MYSELF
         const isFromAllowedNumber = allowedNumbers.includes(senderNumber);
-        const isSelfDm = msg.key.fromMe && msgRemoteJid === myJid;
+        const isSelfDm = msg.key.fromMe && (msgRemoteJid === myJid || msgRemoteJidAlt === myJid);
+
+        console.log(`[DEBUG] remoteJid: ${remoteJid}, remoteJidAlt: ${remoteJidAlt}, senderNumber: ${senderNumber}`);
+        console.log(`[DEBUG] myJid: ${myJid}, isFromAllowedNumber: ${isFromAllowedNumber}, isSelfDm: ${isSelfDm}`);
+        console.log(`[DEBUG] allowedNumbers array:`, allowedNumbers);
 
         if (!isFromAllowedNumber && !isSelfDm) {
-          // console.log(`Ignoring message from ${senderNumber} (not allowed and not Self-DM)`);
+          console.log(`[DEBUG] Ignoring message from ${senderNumber} (not allowed and not Self-DM)`);
           continue;
         }
 
-        console.log("Processing potential command from:", senderNumber);
+        console.log("[DEBUG] Passed filter! Processing potential command from:", senderNumber);
 
         try {
           // Handle text and image
