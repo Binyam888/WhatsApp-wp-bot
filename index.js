@@ -9,12 +9,15 @@ const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const mime = require("mime-types");
-const { uploadMedia, createPost } = require("./wp-client");
+const { uploadMedia, createPost, updatePost, deletePost } = require("./wp-client");
 require("dotenv").config();
 
 const allowedNumbers = process.env.ALLOWED_NUMBERS
   ? process.env.ALLOWED_NUMBERS.split(",")
   : [];
+
+// Map to track user conversation state.
+const userSessions = {};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -165,84 +168,147 @@ async function connectToWhatsApp(retryCount = 0) {
             continue;
           }
 
-          // Rule 3: Must start with "post" followed by optional space and colon (case insensitive)
-          const postPrefixMatch = text.match(/^post\s*:/i);
-          if (!postPrefixMatch) {
-            console.log('Message does not start with "post:". Ignoring.');
+          // ------------------------------------------------------------------
+          // Handle active interactive session
+          // ------------------------------------------------------------------
+          if (userSessions[senderNumber] === "AWAITING_MENU_CHOICE") {
+            const choice = text.trim();
+            let instructionText = "";
+            let templateText = "";
+
+            if (choice === "1") {
+              instructionText = `*Create a New Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
+              templateText = `post\ntitle: \ncontent: `;
+            } else if (choice === "2") {
+              instructionText = `*Update a Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
+              templateText = `update\nid: \ntitle: \ncontent: `;
+            } else if (choice === "3") {
+              instructionText = `*Archive a Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
+              templateText = `archive\nid: `;
+            } else if (choice === "4") {
+              instructionText = `*Delete a Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
+              templateText = `delete\nid: `;
+            } else {
+              await sock.sendMessage(remoteJid, { text: `Invalid choice. Please reply with 1, 2, 3, or 4.` });
+              return; // Exit here, don't clear session yet so they can try again
+            }
+
+            userSessions[senderNumber] = null; // Clear session
+            await sock.sendMessage(remoteJid, { text: instructionText });
+            await sleep(500); // Small delay to guarantee message order
+            await sock.sendMessage(remoteJid, { text: templateText });
             continue;
           }
 
-          // Remove "post:" prefix (and any following whitespace)
-          let cleanText = text.substring(postPrefixMatch[0].length).trim();
+          // ------------------------------------------------------------------
+          // Handle standard commands and fallback menu
+          // ------------------------------------------------------------------
+          // Action prefix matching: "post", "update", "delete", "archive" (case insensitive)
+          // Look for the command at the start of the string OR at the start of any new line 
+          // This makes it forgiving if the user pastes extra text above it.
+          const commandMatch = text.match(/(?:^|\n)\s*(post|update|delete|archive)\s*:?/i);
+          
+          if (!commandMatch) {
+            console.log('Message does not start with a valid command. Sending interactive menu.');
+            
+            userSessions[senderNumber] = "AWAITING_MENU_CHOICE";
 
-          // Parse Title, Content, and Status
-          // Expected format: "title: ... content: ... status: ..." in any order
-          // We use regex to find each part, stopping at the start of another tag or end of string.
-          // Updated to allow spaces before colon: "title :", "content :"
+            const menu = `*🤖 WordPress Bot Menu*\n\n` +
+              `Welcome! Please reply with a number to choose an action:\n\n` +
+              `1️⃣ *Create a new Post*\n` +
+              `2️⃣ *Update a Post*\n` +
+              `3️⃣ *Archive a Post*\n` +
+              `4️⃣ *Delete a Post*\n`;
+            
+            await sock.sendMessage(remoteJid, { text: menu });
+            continue;
+          }
 
-          const titleMatch = cleanText.match(
-            /title\s*:\s*([\s\S]*?)(?=(content\s*:|status\s*:|$))/i,
-          );
-          const contentMatch = cleanText.match(
-            /content\s*:\s*([\s\S]*?)(?=(title\s*:|status\s*:|$))/i,
-          );
-          const statusMatch = cleanText.match(
-            /status\s*:\s*([\s\S]*?)(?=(title\s*:|content\s*:|$))/i,
-          );
+          const action = commandMatch[1].toLowerCase();
+          
+          // Extract text appearing AFTER the matched command by using its index + length
+          let cleanText = text.substring(commandMatch.index + commandMatch[0].length).trim();
+
+          // Regex to safely parse tags even if they don't have colons but followed by another tag or eof
+          const titleMatch = cleanText.match(/title\s*:\s*([\s\S]*?)(?=(content\s*:|status\s*:|id\s*:|$))/i);
+          const contentMatch = cleanText.match(/content\s*:\s*([\s\S]*?)(?=(title\s*:|status\s*:|id\s*:|$))/i);
+          const statusMatch = cleanText.match(/status\s*:\s*([\s\S]*?)(?=(title\s*:|content\s*:|id\s*:|$))/i);
+          const idMatch = cleanText.match(/id\s*:\s*(\d+)/i);
 
           let title = titleMatch ? titleMatch[1].trim() : "";
           let content = contentMatch ? contentMatch[1].trim() : "";
-          let statusRaw = statusMatch
-            ? statusMatch[1].trim().toLowerCase()
-            : "publish";
+          let statusRaw = statusMatch ? statusMatch[1].trim().toLowerCase() : "publish";
+          let postId = idMatch ? parseInt(idMatch[1], 10) : null;
 
           // Validate status
-          let status =
-            statusRaw === "draft" || statusRaw === "publish"
-              ? statusRaw
-              : "publish";
+          let status = (statusRaw === "draft" || statusRaw === "publish" || statusRaw === "trash") ? statusRaw : "publish";
 
-          if (!title) {
-            console.log('No "title:" found.');
-            await sock.sendMessage(remoteJid, {
-              text: `Error: Could not find 'title:' in your post command.`,
-            });
-            continue;
+          if (action === "post") {
+              if (!title || !content) {
+                await sock.sendMessage(remoteJid, { text: `Error: Could not find 'title:' or 'content:' in your post command.` });
+                continue;
+              }
+
+              let featuredMediaId = null;
+              if (mediaBuffer) {
+                console.log("Uploading image...");
+                const filename = `whatsapp-image-${Date.now()}.${fileExt}`;
+                featuredMediaId = await uploadMedia(mediaBuffer, filename, mimeType);
+              }
+
+              console.log(`Creating post: Title="${title}", Status="${status}"`);
+              const post = await createPost(title, content, status, featuredMediaId);
+
+              // **Modified response to include Post ID**
+              await sock.sendMessage(remoteJid, {
+                text: `Post created successfully (${status})!\n*ID: ${post.id}*\nLink: ${post.link}`,
+              });
+              
+          } else if (action === "update") {
+              if (!postId) {
+                  await sock.sendMessage(remoteJid, { text: `Error: 'id:' is required for updating.` });
+                  continue;
+              }
+
+              console.log(`Updating post API call for ID ${postId}`);
+              const post = await updatePost(postId, title, content, statusRaw ? status : null);
+
+              await sock.sendMessage(remoteJid, {
+                text: `Post ID ${postId} updated successfully!\nLink: ${post.link}`,
+              });
+
+          } else if (action === "archive") {
+              if (!postId) {
+                  await sock.sendMessage(remoteJid, { text: `Error: 'id:' is required for archiving.` });
+                  continue;
+              }
+
+              console.log(`Archiving post API call for ID ${postId}`);
+              // WordPress archives posts by setting status to draft or trash. Let's use 'draft'
+              const post = await updatePost(postId, null, null, "draft");
+
+              await sock.sendMessage(remoteJid, {
+                text: `Post ID ${postId} has been archived (set to draft) successfully!`,
+              });
+
+          } else if (action === "delete") {
+              if (!postId) {
+                  await sock.sendMessage(remoteJid, { text: `Error: 'id:' is required for deleting.` });
+                  continue;
+              }
+
+              console.log(`Deleting post API call for ID ${postId}`);
+              await deletePost(postId);
+
+              await sock.sendMessage(remoteJid, {
+                text: `Post ID ${postId} deleted successfully!`,
+              });
           }
-          if (!content) {
-            console.log('No "content:" found.');
-            await sock.sendMessage(remoteJid, {
-              text: `Error: Could not find 'content:' in your post command.`,
-            });
-            continue;
-          }
 
-          let featuredMediaId = null;
-          if (mediaBuffer) {
-            console.log("Uploading image...");
-            const filename = `whatsapp-image-${Date.now()}.${fileExt}`;
-            featuredMediaId = await uploadMedia(
-              mediaBuffer,
-              filename,
-              mimeType,
-            );
-          }
-
-          console.log(`Creating post: Title="${title}", Status="${status}"`);
-          const post = await createPost(
-            title,
-            content,
-            status,
-            featuredMediaId,
-          );
-
-          await sock.sendMessage(remoteJid, {
-            text: `Post created successfully (${status})! Link: ${post.link}`,
-          });
         } catch (error) {
           console.error("Error processing message:", error);
           await sock.sendMessage(remoteJid, {
-            text: `Error creating post: ${error.message}`,
+            text: `Error processing command: ${error.message}`,
           });
         }
       }

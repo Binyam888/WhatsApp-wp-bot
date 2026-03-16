@@ -58,4 +58,42 @@ async function createPost(title, content, status = 'publish', featuredMediaId = 
     }
 }
 
-module.exports = { uploadMedia, createPost };
+async function updatePost(postId, title, content, status) {
+    try {
+        const postData = {};
+        if (title) postData.title = title;
+        if (content) postData.content = content;
+        if (status) postData.status = status;
+
+        const response = await axios.post(`${wpUrl}/wp-json/wp/v2/posts/${postId}`, postData, {
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log('Post updated:', response.data.link);
+        return response.data;
+    } catch (error) {
+        console.error('Error updating post:', error.response ? error.response.data : error.message);
+        throw error;
+    }
+}
+
+async function deletePost(postId) {
+    try {
+        const response = await axios.delete(`${wpUrl}/wp-json/wp/v2/posts/${postId}?force=true`, {
+            headers: {
+                'Authorization': authHeader
+            }
+        });
+
+        console.log('Post deleted:', postId);
+        return response.data;
+    } catch (error) {
+        console.error('Error deleting post:', error.response ? error.response.data : error.message);
+        throw error;
+    }
+}
+
+module.exports = { uploadMedia, createPost, updatePost, deletePost };
