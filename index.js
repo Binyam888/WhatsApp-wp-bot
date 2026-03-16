@@ -62,16 +62,16 @@ async function connectToWhatsApp(retryCount = 0) {
         reason === 405;                            // WS rejection of stale creds
 
       if (shouldClearSession) {
-        console.log("�️  Invalid/stale session detected. Clearing auth and generating new QR...");
+        console.log(" Invalid/stale session detected. Clearing auth and generating new QR...");
         fs.rmSync("auth_info", { recursive: true, force: true });
         await sleep(5000);
         connectToWhatsApp(0);
       } else if (reason === DisconnectReason.restartRequired) { // 515
-        console.log("🔄 Restart required. Reconnecting...");
+        console.log(" Restart required. Reconnecting...");
         await sleep(3000);
         connectToWhatsApp(0);
       } else if (reason === DisconnectReason.connectionReplaced) { // 440
-        console.log("⚠️  Connection replaced by another session. Stopping.");
+        console.log("  Connection replaced by another session. Stopping.");
         // Don't reconnect — another instance is running
       } else {
         const delay = Math.min(5000 * (retryCount + 1), 30000);
