@@ -4,21 +4,56 @@ const path = require('path');
 const FormData = require('form-data');
 require('dotenv').config();
 
-const wpUrl = process.env.WP_URL;
-const wpUsername = process.env.WP_USERNAME;
-const wpPassword = process.env.WP_APP_PASSWORD;
+const CONFIG_FILE = path.join(__dirname, 'config.json');
 
-const authHeader = `Basic ${Buffer.from(`${wpUsername}:${wpPassword}`).toString('base64')}`;
+function getAuthHeader() {
+    if (!fs.existsSync(CONFIG_FILE)) {
+        throw new Error("WordPress credentials not configured. Please use the WP Plugin to configure the bot.");
+    }
+    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (!config.wpUrl || !config.username || !config.password) {
+        throw new Error("Incomplete WordPress credentials.");
+    }
+    return `Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`;
+}
+
+function getWpUrl() {
+    if (!fs.existsSync(CONFIG_FILE)) {
+        throw new Error("WordPress credentials not configured.");
+    }
+    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    return config.wpUrl.replace(/\/$/, ""); 
+}
+
+async function verifyConnection(wpUrl, username, password) {
+    try {
+        const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+        const url = wpUrl.replace(/\/$/, "");
+        
+        // Ping WP API to test credentials
+        await axios.get(`${url}/wp-json/wp/v2/types/post`, {
+            headers: { 'Authorization': authHeader }
+        });
+        return true;
+    } catch (error) {
+        throw error;
+    }
+}
+
+function saveConfig(wpUrl, username, password) {
+    const config = { wpUrl, username, password };
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+}
 
 async function uploadMedia(buffer, filename, mimeType) {
     try {
         const formData = new FormData();
         formData.append('file', buffer, { filename, contentType: mimeType });
 
-        const response = await axios.post(`${wpUrl}/wp-json/wp/v2/media`, formData, {
+        const response = await axios.post(`${getWpUrl()}/wp-json/wp/v2/media`, formData, {
             headers: {
                 ...formData.getHeaders(),
-                'Authorization': authHeader,
+                'Authorization': getAuthHeader(),
                 'Content-Disposition': `attachment; filename=${filename}`
             }
         });
@@ -36,16 +71,19 @@ async function createPost(title, content, status = 'publish', featuredMediaId = 
         const postData = {
             title: title,
             content: content,
-            status: status
+            status: status,
+            meta: {
+                _created_by_bot: true
+            }
         };
 
         if (featuredMediaId) {
             postData.featured_media = featuredMediaId;
         }
 
-        const response = await axios.post(`${wpUrl}/wp-json/wp/v2/posts`, postData, {
+        const response = await axios.post(`${getWpUrl()}/wp-json/wp/v2/posts`, postData, {
             headers: {
-                'Authorization': authHeader,
+                'Authorization': getAuthHeader(),
                 'Content-Type': 'application/json'
             }
         });
@@ -65,9 +103,9 @@ async function updatePost(postId, title, content, status) {
         if (content) postData.content = content;
         if (status) postData.status = status;
 
-        const response = await axios.post(`${wpUrl}/wp-json/wp/v2/posts/${postId}`, postData, {
+        const response = await axios.post(`${getWpUrl()}/wp-json/wp/v2/posts/${postId}`, postData, {
             headers: {
-                'Authorization': authHeader,
+                'Authorization': getAuthHeader(),
                 'Content-Type': 'application/json'
             }
         });
@@ -82,9 +120,9 @@ async function updatePost(postId, title, content, status) {
 
 async function deletePost(postId) {
     try {
-        const response = await axios.delete(`${wpUrl}/wp-json/wp/v2/posts/${postId}?force=true`, {
+        const response = await axios.delete(`${getWpUrl()}/wp-json/wp/v2/posts/${postId}?force=true`, {
             headers: {
-                'Authorization': authHeader
+                'Authorization': getAuthHeader()
             }
         });
 
@@ -96,4 +134,4 @@ async function deletePost(postId) {
     }
 }
 
-module.exports = { uploadMedia, createPost, updatePost, deletePost };
+module.exports = { uploadMedia, createPost, updatePost, deletePost, verifyConnection, saveConfig };

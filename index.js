@@ -1,15 +1,52 @@
+const express = require('express');
+const cors = require('cors');
 const TelegramBot = require('node-telegram-bot-api');
 const mime = require('mime-types');
-const { uploadMedia, createPost, updatePost, deletePost } = require('./wp-client');
+const { uploadMedia, createPost, updatePost, deletePost, saveConfig, verifyConnection } = require('./wp-client');
 require('dotenv').config();
 
+// ------------------------------------------------------------------
+// Express API Server for WordPress Plugin Configuration
+// ------------------------------------------------------------------
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+app.post('/api/configure', async (req, res) => {
+    const { wpUrl, username, password } = req.body;
+    
+    if (!wpUrl || !username || !password) {
+        return res.status(400).json({ success: false, message: 'Missing configuration fields from WordPress.' });
+    }
+
+    try {
+        // Test WP Connection
+        await verifyConnection(wpUrl, username, password);
+        // Save credentials mapping inside the Node runtime context
+        saveConfig(wpUrl, username, password);
+        
+        console.log(`✅ Received & Verified WordPress context from: ${wpUrl}`);
+        return res.json({ success: true, message: 'Successfully connected and saved WordPress credentials in the Node.js context.' });
+    } catch (error) {
+        console.error('❌ WordPress connection test failed:', error.message);
+        return res.status(401).json({ success: false, message: 'Node.js failed to verify the provided WordPress URL or credentials.' });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`✅ Internal configuration API is running on port ${PORT}`);
+});
+
+// ------------------------------------------------------------------
+// Telegram Bot Server
+// ------------------------------------------------------------------
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
   console.error('Error: TELEGRAM_BOT_TOKEN is missing in .env file.');
   process.exit(1);
 }
 
-// Create a bot that uses 'polling' to fetch new updates
 const bot = new TelegramBot(token, { polling: true });
 
 const allowedNumbers = process.env.ALLOWED_NUMBERS
@@ -22,12 +59,10 @@ const userSessions = {};
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   
-  // Try to find the user in ALLOWED_NUMBERS by User ID or Username
   const senderId = msg.from.id.toString();
   const senderUsername = msg.from.username ? msg.from.username : '';
   const senderUsernameWithAt = msg.from.username ? `@${msg.from.username}` : '';
   
-  // If allowedNumbers is empty, we allow any user (optional feature, based on original logic)
   const isFromAllowedUser = allowedNumbers.length === 0 || 
                             allowedNumbers.includes(senderId) || 
                             allowedNumbers.includes(senderUsername) || 
@@ -44,9 +79,7 @@ bot.on('message', async (msg) => {
   let fileExt = '';
 
   try {
-    // Process images
     if (msg.photo && msg.photo.length > 0) {
-      // Get the highest resolution photo (last in the array)
       const photo = msg.photo[msg.photo.length - 1];
       const fileLink = await bot.getFileLink(photo.file_id);
       
@@ -58,13 +91,9 @@ bot.on('message', async (msg) => {
     }
 
     if (!text && !userSessions[chatId]) {
-      // If no text, we can't find the keyword
       return;
     }
 
-    // ------------------------------------------------------------------
-    // Handle active interactive session
-    // ------------------------------------------------------------------
     if (userSessions[chatId] === "AWAITING_MENU_CHOICE") {
       const choice = text.trim();
       let instructionText = "";
@@ -87,15 +116,12 @@ bot.on('message', async (msg) => {
         return; 
       }
 
-      userSessions[chatId] = null; // Clear session
+      userSessions[chatId] = null; 
       await bot.sendMessage(chatId, instructionText, { parse_mode: 'Markdown' });
       await bot.sendMessage(chatId, templateText);
       return;
     }
 
-    // ------------------------------------------------------------------
-    // Handle standard commands and fallback menu
-    // ------------------------------------------------------------------
     const commandMatch = text.match(/(?:^|\n)\s*(post|update|delete|archive)\s*:?/i);
     
     if (!commandMatch) {
@@ -183,9 +209,13 @@ bot.on('message', async (msg) => {
     }
 
   } catch (error) {
+    if (error.message.includes("WordPress credentials not configured")) {
+        await bot.sendMessage(chatId, `❌ WordPress credentials are not configured natively! Please install the new WP Plugin and enter my API Endpoint via WP Settings.`);
+        return;
+    }
     console.error("Error processing message:", error);
     await bot.sendMessage(chatId, `Error processing command: ${error.message}`);
   }
 });
 
-console.log("✅ Telegram bot is running...");
+console.log("✅ Telegram bot message handler is loaded.");
