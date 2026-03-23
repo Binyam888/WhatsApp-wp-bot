@@ -38,9 +38,6 @@ app.listen(PORT, () => {
     console.log(`✅ Internal configuration API is running on port ${PORT}`);
 });
 
-// ------------------------------------------------------------------
-// Telegram Bot Server
-// ------------------------------------------------------------------
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
   console.error('Error: TELEGRAM_BOT_TOKEN is missing in .env file.');
@@ -90,131 +87,180 @@ bot.on('message', async (msg) => {
       fileExt = mime.extension(mimeType) || 'jpg';
     }
 
-    if (!text && !userSessions[chatId]) {
+    if (!text && !mediaBuffer) {
       return;
     }
 
-    if (userSessions[chatId] === "AWAITING_MENU_CHOICE") {
-      const choice = text.trim();
-      let instructionText = "";
-      let templateText = "";
-
-      if (choice === "1") {
-        instructionText = `*Create a New Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
-        templateText = `post\ntitle: \ncontent: `;
-      } else if (choice === "2") {
-        instructionText = `*Update a Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
-        templateText = `update\nid: \ntitle: \ncontent: `;
-      } else if (choice === "3") {
-        instructionText = `*Archive a Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
-        templateText = `archive\nid: `;
-      } else if (choice === "4") {
-        instructionText = `*Delete a Post:*\nCopy the text in the next message, fill in your details, and send it back to me!`;
-        templateText = `delete\nid: `;
-      } else {
-        await bot.sendMessage(chatId, `Invalid choice. Please reply with 1, 2, 3, or 4.`);
-        return; 
-      }
-
-      userSessions[chatId] = null; 
-      await bot.sendMessage(chatId, instructionText, { parse_mode: 'Markdown' });
-      await bot.sendMessage(chatId, templateText);
-      return;
+    if (text.toLowerCase() === 'cancel' || text === '/cancel') {
+        if (userSessions[chatId]) {
+            delete userSessions[chatId];
+            await bot.sendMessage(chatId, `Action cancelled.`);
+        } else {
+            await bot.sendMessage(chatId, `No active action to cancel.`);
+        }
+        return;
     }
 
-    const commandMatch = text.match(/(?:^|\n)\s*(post|update|delete|archive)\s*:?/i);
-    
-    if (!commandMatch) {
-      console.log('Message does not start with a valid command. Sending interactive menu.');
-      
-      userSessions[chatId] = "AWAITING_MENU_CHOICE";
+    if (userSessions[chatId]) {
+      const session = userSessions[chatId];
 
-      const menu = `*🤖 WordPress Bot Menu*\n\n` +
-        `Welcome! Please reply with a number to choose an action:\n\n` +
-        `1️⃣ *Create a new Post*\n` +
-        `2️⃣ *Update a Post*\n` +
-        `3️⃣ *Archive a Post*\n` +
-        `4️⃣ *Delete a Post*\n`;
-      
-      await bot.sendMessage(chatId, menu, { parse_mode: 'Markdown' });
-      return;
-    }
-
-    const action = commandMatch[1].toLowerCase();
-    
-    let cleanText = text.substring(commandMatch.index + commandMatch[0].length).trim();
-
-    const titleMatch = cleanText.match(/title\s*:\s*([\s\S]*?)(?=(content\s*:|status\s*:|id\s*:|$))/i);
-    const contentMatch = cleanText.match(/content\s*:\s*([\s\S]*?)(?=(title\s*:|status\s*:|id\s*:|$))/i);
-    const statusMatch = cleanText.match(/status\s*:\s*([\s\S]*?)(?=(title\s*:|content\s*:|id\s*:|$))/i);
-    const idMatch = cleanText.match(/id\s*:\s*(\d+)/i);
-
-    let title = titleMatch ? titleMatch[1].trim() : "";
-    let content = contentMatch ? contentMatch[1].trim() : "";
-    let statusRaw = statusMatch ? statusMatch[1].trim().toLowerCase() : "publish";
-    let postId = idMatch ? parseInt(idMatch[1], 10) : null;
-
-    let status = (statusRaw === "draft" || statusRaw === "publish" || statusRaw === "trash") ? statusRaw : "publish";
-
-    if (action === "post") {
-        if (!title || !content) {
-          await bot.sendMessage(chatId, `Error: Could not find 'title:' or 'content:' in your post command.`);
+      if (session.action === "post") {
+        if (session.step === "title") {
+          session.title = text;
+          session.step = "content";
+          await bot.sendMessage(chatId, `Great! Now send me the *Content* of the post:`, { parse_mode: 'Markdown', reply_markup: { force_reply: true } });
+          return;
+        } else if (session.step === "content") {
+          session.content = text;
+          await bot.sendMessage(chatId, `⏳ Creating post: "${session.title}"...`);
+          try {
+            let featuredMediaId = null;
+            if (mediaBuffer) {
+              const filename = `telegram-image-${Date.now()}.${fileExt}`;
+              featuredMediaId = await uploadMedia(mediaBuffer, filename, mimeType);
+            }
+            const post = await createPost(session.title, session.content, "publish", featuredMediaId);
+            await bot.sendMessage(chatId, `✅ Post created successfully!\n*ID: ${post.id}*\nLink: ${post.link}`, { parse_mode: 'Markdown' });
+          } catch (e) {
+            await bot.sendMessage(chatId, `❌ Error creating post: ${e.message}`);
+          }
+          delete userSessions[chatId];
           return;
         }
-
-        let featuredMediaId = null;
-        if (mediaBuffer) {
-          console.log("Uploading image...");
-          const filename = `telegram-image-${Date.now()}.${fileExt}`;
-          featuredMediaId = await uploadMedia(mediaBuffer, filename, mimeType);
-        }
-
-        console.log(`Creating post: Title="${title}", Status="${status}"`);
-        const post = await createPost(title, content, status, featuredMediaId);
-
-        await bot.sendMessage(chatId, `Post created successfully (${status})!\n*ID: ${post.id}*\nLink: ${post.link}`, { parse_mode: 'Markdown' });
-        
-    } else if (action === "update") {
-        if (!postId) {
-            await bot.sendMessage(chatId, `Error: 'id:' is required for updating.`);
+      } else if (session.action === "update") {
+        if (session.step === "id") {
+          session.postId = parseInt(text.trim(), 10);
+          if (isNaN(session.postId)) {
+            await bot.sendMessage(chatId, `Invalid ID. Please send a valid number.`);
             return;
-        }
-
-        console.log(`Updating post API call for ID ${postId}`);
-        const post = await updatePost(postId, title, content, statusRaw ? status : null);
-
-        await bot.sendMessage(chatId, `Post ID ${postId} updated successfully!\nLink: ${post.link}`);
-
-    } else if (action === "archive") {
-        if (!postId) {
-            await bot.sendMessage(chatId, `Error: 'id:' is required for archiving.`);
+          }
+          session.step = "title_optional";
+          await bot.sendMessage(chatId, `Send the *new Title* (or type "skip" to keep the old title):`, { parse_mode: 'Markdown', reply_markup: { force_reply: true } });
+          return;
+        } else if (session.step === "title_optional") {
+          session.title = text.trim().toLowerCase() === 'skip' ? null : text;
+          session.step = "content_optional";
+          await bot.sendMessage(chatId, `Send the *new Content* (or type "skip" to keep the old content):`, { parse_mode: 'Markdown', reply_markup: { force_reply: true } });
+          return;
+        } else if (session.step === "content_optional") {
+          session.content = text.trim().toLowerCase() === 'skip' ? null : text;
+          
+          if (!session.title && !session.content) {
+            await bot.sendMessage(chatId, `No changes made. Update cancelled.`);
+            delete userSessions[chatId];
             return;
+          }
+
+          await bot.sendMessage(chatId, `⏳ Updating post ID ${session.postId}...`);
+          try {
+            const post = await updatePost(session.postId, session.title, session.content, null);
+            await bot.sendMessage(chatId, `✅ Post updated successfully!\nLink: ${post.link}`);
+          } catch (e) {
+            await bot.sendMessage(chatId, `❌ Error updating post: ${e.message}`);
+          }
+          delete userSessions[chatId];
+          return;
         }
-
-        console.log(`Archiving post API call for ID ${postId}`);
-        const post = await updatePost(postId, null, null, "draft");
-
-        await bot.sendMessage(chatId, `Post ID ${postId} has been archived (set to draft) successfully!`);
-
-    } else if (action === "delete") {
-        if (!postId) {
-            await bot.sendMessage(chatId, `Error: 'id:' is required for deleting.`);
+      } else if (session.action === "archive") {
+        if (session.step === "id") {
+          const postId = parseInt(text.trim(), 10);
+          if (isNaN(postId)) {
+            await bot.sendMessage(chatId, `Invalid ID. Please send a valid number.`);
             return;
+          }
+          try {
+            await updatePost(postId, null, null, "draft");
+            await bot.sendMessage(chatId, `✅ Post ID ${postId} has been archived (set to draft) successfully!`);
+          } catch (e) {
+            await bot.sendMessage(chatId, `❌ Error archiving post: ${e.message}`);
+          }
+          delete userSessions[chatId];
+          return;
         }
-
-        console.log(`Deleting post API call for ID ${postId}`);
-        await deletePost(postId);
-
-        await bot.sendMessage(chatId, `Post ID ${postId} deleted successfully!`);
+      } else if (session.action === "delete") {
+        if (session.step === "id") {
+          const postId = parseInt(text.trim(), 10);
+          if (isNaN(postId)) {
+            await bot.sendMessage(chatId, `Invalid ID. Please send a valid number.`);
+            return;
+          }
+          try {
+            await deletePost(postId);
+            await bot.sendMessage(chatId, `✅ Post ID ${postId} deleted successfully!`);
+          } catch (e) {
+            await bot.sendMessage(chatId, `❌ Error deleting post: ${e.message}`);
+          }
+          delete userSessions[chatId];
+          return;
+        }
+      }
     }
 
+    // Default: Send Menu
+    const menuOpts = {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📝 Create a new Post", callback_data: "menu_post" }],
+          [{ text: "✏️ Update a Post", callback_data: "menu_update" }],
+          [{ text: "📦 Archive a Post", callback_data: "menu_archive" }],
+          [{ text: "🗑️ Delete a Post", callback_data: "menu_delete" }]
+        ]
+      }
+    };
+    
+    await bot.sendMessage(chatId, `*🤖 WordPress Bot Menu*\n\nWelcome! Please click an action below:`, menuOpts);
+    
   } catch (error) {
     if (error.message.includes("WordPress credentials not configured")) {
-        await bot.sendMessage(chatId, `❌ WordPress credentials are not configured natively! Please install the new WP Plugin and enter my API Endpoint via WP Settings.`);
+        await bot.sendMessage(chatId, `❌ WordPress credentials are not configured natively! Please set WP_URL, WP_USERNAME, and WP_PASSWORD in the Node server's .env file.`);
         return;
     }
     console.error("Error processing message:", error);
     await bot.sendMessage(chatId, `Error processing command: ${error.message}`);
+  }
+});
+
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  
+  const senderId = query.from.id.toString();
+  const senderUsername = query.from.username ? query.from.username : '';
+  const senderUsernameWithAt = query.from.username ? `@${query.from.username}` : '';
+  
+  const isFromAllowedUser = allowedNumbers.length === 0 || 
+                            allowedNumbers.includes(senderId) || 
+                            allowedNumbers.includes(senderUsername) || 
+                            allowedNumbers.includes(senderUsernameWithAt);
+
+  if (!isFromAllowedUser) {
+    console.log(`[DEBUG] Ignoring callback from ${senderId} (not in allowed list)`);
+    await bot.answerCallbackQuery(query.id, { text: 'Unauthorized', show_alert: true });
+    return;
+  }
+
+  const data = query.data;
+  let instructionText = "";
+
+  if (data === "menu_post") {
+    userSessions[chatId] = { action: 'post', step: 'title' };
+    instructionText = `*Create a New Post:*\nPlease send the *Title* for the new post:\n_(Type 'cancel' to abort)_`;
+  } else if (data === "menu_update") {
+    userSessions[chatId] = { action: 'update', step: 'id' };
+    instructionText = `*Update a Post:*\nPlease send the *Post ID* you want to update:\n_(Type 'cancel' to abort)_`;
+  } else if (data === "menu_archive") {
+    userSessions[chatId] = { action: 'archive', step: 'id' };
+    instructionText = `*Archive a Post:*\nPlease send the *Post ID* to archive (set to draft):\n_(Type 'cancel' to abort)_`;
+  } else if (data === "menu_delete") {
+    userSessions[chatId] = { action: 'delete', step: 'id' };
+    instructionText = `*Delete a Post:*\nPlease send the *Post ID* to delete:\n_(Type 'cancel' to abort)_`;
+  }
+
+  if (instructionText) {
+    await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId, instructionText, { parse_mode: 'Markdown', reply_markup: { force_reply: true } });
+  } else {
+    await bot.answerCallbackQuery(query.id);
   }
 });
 
