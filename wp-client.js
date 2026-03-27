@@ -2,37 +2,52 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
+const https = require('https');
 require('dotenv').config();
 
+const agent = new https.Agent({ rejectUnauthorized: false });
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 
-function getAuthHeader() {
+function getSites() {
     if (!fs.existsSync(CONFIG_FILE)) {
-        throw new Error("WordPress credentials not configured. Please use the WP Plugin to configure the bot.");
+        return [];
     }
-    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    if (!config.wpUrl || !config.username || !config.password) {
-        throw new Error("Incomplete WordPress credentials.");
+    try {
+        const data = fs.readFileSync(CONFIG_FILE, 'utf8');
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed.wpUrl) return [parsed];
+    } catch (e) {
+        console.error("Error reading config.json", e);
     }
-    return `Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`;
+    return [];
 }
 
-function getWpUrl() {
-    if (!fs.existsSync(CONFIG_FILE)) {
-        throw new Error("WordPress credentials not configured.");
+function saveConfig(wpUrl, username, password, clientIdentifier) {
+    let sites = getSites();
+    const index = sites.findIndex(s => s.wpUrl === wpUrl);
+    if (index >= 0) {
+        sites[index] = { wpUrl, username, password, clientIdentifier };
+    } else {
+        sites.push({ wpUrl, username, password, clientIdentifier });
     }
-    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    return config.wpUrl.replace(/\/$/, ""); 
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(sites, null, 2), 'utf8');
+}
+
+function getAuthHeader(site) {
+    return `Basic ${Buffer.from(`${site.username}:${site.password}`).toString('base64')}`;
+}
+
+function normalize(url) {
+    return url.replace(/\/$/, "");
 }
 
 async function verifyConnection(wpUrl, username, password) {
     try {
         const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
-        const url = wpUrl.replace(/\/$/, "");
-        
-        // Ping WP API to test credentials
-        await axios.get(`${url}/wp-json/wp/v2/types/post`, {
-            headers: { 'Authorization': authHeader }
+        await axios.get(`${normalize(wpUrl)}/wp-json/wp/v2/types/post`, {
+            headers: { 'Authorization': authHeader },
+            httpsAgent: agent
         });
         return true;
     } catch (error) {
@@ -40,98 +55,71 @@ async function verifyConnection(wpUrl, username, password) {
     }
 }
 
-function saveConfig(wpUrl, username, password) {
-    const config = { wpUrl, username, password };
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
-}
-
-async function uploadMedia(buffer, filename, mimeType) {
+async function uploadMedia(site, buffer, filename, mimeType) {
     try {
         const formData = new FormData();
         formData.append('file', buffer, { filename, contentType: mimeType });
-
-        const response = await axios.post(`${getWpUrl()}/wp-json/wp/v2/media`, formData, {
+        const response = await axios.post(`${normalize(site.wpUrl)}/wp-json/wp/v2/media`, formData, {
             headers: {
                 ...formData.getHeaders(),
-                'Authorization': getAuthHeader(),
+                'Authorization': getAuthHeader(site),
                 'Content-Disposition': `attachment; filename=${filename}`
-            }
+            },
+            httpsAgent: agent
         });
-
-        console.log('Media uploaded:', response.data.id);
         return response.data.id;
     } catch (error) {
-        console.error('Error uploading media:', error.response ? error.response.data : error.message);
         throw error;
     }
 }
 
-async function createPost(title, content, status = 'publish', featuredMediaId = null) {
+async function createPost(site, title, content, status = 'publish', featuredMediaId = null) {
     try {
         const postData = {
             title: title,
             content: content,
             status: status,
-            meta: {
-                _created_by_bot: true
-            }
+            meta: { bot_created: true }
         };
+        if (featuredMediaId) postData.featured_media = featuredMediaId;
 
-        if (featuredMediaId) {
-            postData.featured_media = featuredMediaId;
-        }
-
-        const response = await axios.post(`${getWpUrl()}/wp-json/wp/v2/posts`, postData, {
+        const response = await axios.post(`${normalize(site.wpUrl)}/wp-json/wp/v2/posts`, postData, {
             headers: {
-                'Authorization': getAuthHeader(),
+                'Authorization': getAuthHeader(site),
                 'Content-Type': 'application/json'
-            }
+            },
+            httpsAgent: agent
         });
-
-        console.log('Post created:', response.data.link);
         return response.data;
-    } catch (error) {
-        console.error('Error creating post:', error.response ? error.response.data : error.message);
-        throw error;
-    }
+    } catch (error) { throw error; }
 }
 
-async function updatePost(postId, title, content, status) {
+async function updatePost(site, postId, title, content, status) {
     try {
         const postData = {};
         if (title) postData.title = title;
         if (content) postData.content = content;
         if (status) postData.status = status;
 
-        const response = await axios.post(`${getWpUrl()}/wp-json/wp/v2/posts/${postId}`, postData, {
+        const response = await axios.post(`${normalize(site.wpUrl)}/wp-json/wp/v2/posts/${postId}`, postData, {
             headers: {
-                'Authorization': getAuthHeader(),
+                'Authorization': getAuthHeader(site),
                 'Content-Type': 'application/json'
-            }
+            },
+            httpsAgent: agent
         });
-
-        console.log('Post updated:', response.data.link);
         return response.data;
-    } catch (error) {
-        console.error('Error updating post:', error.response ? error.response.data : error.message);
-        throw error;
-    }
+    } catch (error) { throw error; }
 }
 
-async function deletePost(postId) {
+async function deletePost(site, postId) {
     try {
-        const response = await axios.delete(`${getWpUrl()}/wp-json/wp/v2/posts/${postId}?force=true`, {
-            headers: {
-                'Authorization': getAuthHeader()
-            }
+        const response = await axios.delete(`${normalize(site.wpUrl)}/wp-json/wp/v2/posts/${postId}?force=true`, {
+            headers: { 'Authorization': getAuthHeader(site) },
+            httpsAgent: agent
         });
-
-        console.log('Post deleted:', postId);
         return response.data;
-    } catch (error) {
-        console.error('Error deleting post:', error.response ? error.response.data : error.message);
-        throw error;
-    }
+    } catch (error) { throw error; }
 }
 
-module.exports = { uploadMedia, createPost, updatePost, deletePost, verifyConnection, saveConfig };
+module.exports = { getSites, uploadMedia, createPost, updatePost, deletePost, verifyConnection, saveConfig };

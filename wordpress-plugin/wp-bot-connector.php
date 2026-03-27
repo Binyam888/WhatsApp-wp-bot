@@ -16,10 +16,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 // Update this constant when moving your Node.js bot to production
 define('WP_BOT_NODE_API_URL', 'http://localhost:3000');
 
-// Register meta key so the WP REST API accepts and utilizes "_created_by_bot" during POST /wp-json/wp/v2/posts overrides!
+// Register meta key so the WP REST API accepts and utilizes "bot_created" during POST /wp-json/wp/v2/posts overrides!
 add_action('init', 'wp_bot_register_meta');
 function wp_bot_register_meta() {
-    register_post_meta('post', '_created_by_bot', array(
+    register_post_meta('post', 'bot_created', array(
         'show_in_rest' => true,
         'single' => true,
         'type' => 'boolean',
@@ -29,6 +29,48 @@ function wp_bot_register_meta() {
 add_action('admin_menu', 'wp_bot_admin_menu');
 function wp_bot_admin_menu() {
     add_menu_page('Telegram Bot Settings', 'Telegram Bot', 'manage_options', 'wp-bot-connector', 'wp_bot_settings_page', 'dashicons-smartphone', 30);
+    add_submenu_page('wp-bot-connector', 'Settings', 'Settings', 'manage_options', 'wp-bot-connector', 'wp_bot_settings_page');
+    add_submenu_page('wp-bot-connector', 'User Manual', 'User Manual', 'manage_options', 'wp-bot-manual', 'wp_bot_manual_page');
+}
+
+function wp_bot_manual_page() {
+    ?>
+    <div class="wrap">
+        <h1>Telegram Bot User Manual</h1>
+        <div style="background:#fff;border:1px solid #ccd0d4;padding:25px;margin-top:20px;box-shadow: 0 1px 1px rgba(0,0,0,.04);">
+            <h2 style="margin-top:0;">1. How to Connect</h2>
+            <ol style="font-size:15px;line-height:1.6;">
+                <li>Navigate to the <strong>Settings</strong> tab under the Telegram Bot menu.</li>
+                <li>Enter your WordPress Username and an Application Password.</li>
+                <li>Enter your exact Telegram Username (e.g., <strong>@binyam</strong>) in the "Your Telegram Username" field. This ensures your bot knows this site explicitly belongs to you.</li>
+                <li>Click <strong>Save Settings & Connect</strong>. Node.js will verify everything instantly.</li>
+            </ol>
+            
+            <hr style="margin:30px 0;border:0;border-top:1px solid #eee;" />
+            
+            <h2>2. How to Manage Posts</h2>
+            <p style="font-size:15px;">After connecting, scan the QR code to open a chat with your Telegram bot. You can interact with it via menus, or by typing commands directly.</p>
+            
+            <h3>Method A: Basic Text Command</h3>
+            <p>Type exactly like this and hit send:</p>
+            <pre style="background:#f4f4f4;padding:15px;border-radius:5px;font-size:14px;">post
+title: My First Article
+content: **Hello World!** This is an exciting markdown article containing #hashtags.</pre>
+            
+            <h3>Method B: Document Uploads (.md or .txt)</h3>
+            <p>You can create posts entirely from Markdown files! Drag & Drop a .md file into the Telegram Bot.</p>
+            <ul style="font-size:15px;line-height:1.6;">
+                <li><strong>Caption your upload:</strong> If you write <code>post title: Fast Post!</code> in the upload caption, the bot will extract the entire document and use it as your article content.</li>
+                <li><strong>All-in-One File:</strong> You can place the command block natively at the top of your text document and upload it with no caption.</li>
+            </ul>
+
+            <hr style="margin:30px 0;border:0;border-top:1px solid #eee;" />
+            
+            <h2>3. Managing Multiple Websites</h2>
+            <p style="font-size:15px;">If you install this plugin on 5 different websites and map them all to your <strong>@username</strong>, your Telegram bot will detect all of them! Simply type <strong>/sites</strong> in Telegram to switch between the active websites you want to control.</p>
+        </div>
+    </div>
+    <?php
 }
 
 function wp_bot_settings_page() {
@@ -37,17 +79,22 @@ function wp_bot_settings_page() {
         
         $bot_username = sanitize_text_field($_POST['bot_username']);
         $bot_password = sanitize_text_field($_POST['bot_password']);
+        $wp_url_override = sanitize_text_field($_POST['wp_url_override']);
+        $client_identifier = sanitize_text_field($_POST['client_identifier']);
         
         update_option('wp_bot_username', $bot_username);
         update_option('wp_bot_password', $bot_password);
+        update_option('wp_bot_wp_url', $wp_url_override);
+        update_option('wp_bot_client_identifier', $client_identifier);
         
-        $wp_url = site_url();
+        $wp_url = $wp_url_override;
         
         $response = wp_remote_post(rtrim(WP_BOT_NODE_API_URL, '/') . '/api/configure', array(
             'body' => json_encode(array(
                 'wpUrl' => $wp_url,
                 'username' => $bot_username,
-                'password' => $bot_password
+                'password' => $bot_password,
+                'clientIdentifier' => $client_identifier
             )),
             'headers' => array('Content-Type' => 'application/json'),
             'timeout' => 15
@@ -59,7 +106,11 @@ function wp_bot_settings_page() {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
             if (!empty($data['success'])) {
-                echo '<div class="notice notice-success is-dismissible"><p>Successfully connected! Credentials automatically sent to Node.js Bot Server.</p></div>';
+                // Save Telegram Bot identity locally
+                if (isset($data['botUsername'])) {
+                    update_option('wp_bot_telegram_username', sanitize_text_field($data['botUsername']));
+                }
+                echo '<div class="notice notice-success is-dismissible"><p>Successfully connected to the Node.js Telegram Bot Framework!</p></div>';
             } else {
                 echo '<div class="notice notice-error is-dismissible"><p>Node.js rejected the connection: ' . esc_html($body) . '</p></div>';
             }
@@ -68,13 +119,39 @@ function wp_bot_settings_page() {
 
     $bot_username = get_option('wp_bot_username', '');
     $bot_password = get_option('wp_bot_password', '');
+    $wp_url_override = get_option('wp_bot_wp_url', site_url());
+    $client_identifier = get_option('wp_bot_client_identifier', '');
+    
+    $telegram_bot_name = get_option('wp_bot_telegram_username', '');
     ?>
     <div class="wrap">
         <h1>Telegram Bot Connector</h1>
         
+        <?php if (!empty($telegram_bot_name)): ?>
+            <div style="background: #fff; border: 1px solid #ccd0d4; padding: 15px; display: inline-block; margin-bottom: 20px; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
+                <h3 style="margin-top: 0;">Connected Bot: <strong>@<?php echo esc_html($telegram_bot_name); ?></strong></h3>
+                <p>Scan this QR code in Telegram to instantly open a chat with this bot!</p>
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://t.me/<?php echo urlencode($telegram_bot_name); ?>" alt="Bot QR Code" style="border-radius: 8px;">
+            </div>
+        <?php endif; ?>
+        
         <form method="POST">
             <?php wp_nonce_field('wp_bot_settings_verify'); ?>
             <table class="form-table">
+                <tr>
+                    <th scope="row"><label for="wp_url_override">WordPress Site URL</label></th>
+                    <td>
+                        <input name="wp_url_override" type="text" id="wp_url_override" value="<?php echo esc_attr($wp_url_override); ?>" class="regular-text" required>
+                        <p class="description">If your local site shows a red HTTPS but doesn't have SSL, change this to exactly <strong>http://</strong> to bypass the error.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="client_identifier">Your Telegram Username</label></th>
+                    <td>
+                        <input name="client_identifier" type="text" id="client_identifier" value="<?php echo esc_attr($client_identifier); ?>" class="regular-text" placeholder="@your_username" required >
+                        <p class="description">Required: Provide your exact Telegram Username (or phone number). The Node.js bot uses this to map this WordPress site directly to you, enabling multi-site support!</p>
+                    </td>
+                </tr>
                 <tr>
                     <th scope="row"><label for="bot_username">WordPress Username for Bot</label></th>
                     <td>
@@ -114,7 +191,7 @@ function wp_bot_settings_page() {
                     'post_status' => 'any',
                     'meta_query' => array(
                         array(
-                            'key' => '_created_by_bot',
+                            'key' => 'bot_created',
                             'value' => '1',
                             'compare' => '='
                         )
