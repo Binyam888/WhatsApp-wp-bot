@@ -218,18 +218,46 @@ bot.on('message', async (msg) => {
                     return bot.sendMessage(chatId, "Content cannot be completely empty. Please send some text, a file, or an image.");
                 }
                 
-                await bot.sendMessage(chatId, `⏳ Creating post on <b>${activeSite.wpUrl}</b>...`, { parse_mode: 'HTML' });
+                uState.content = finalContent;
+                if (mediaBuffer) {
+                    uState.mediaBuffer = mediaBuffer;
+                    uState.mimeType = mimeType;
+                    uState.fileExt = fileExt;
+                }
+                uState.step = 'status';
+                
+                const statusKeyboard = {
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: 'Publish Now' }, { text: 'Save to Drafts' }],
+                            [{ text: 'Cancel' }]
+                        ],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                };
+                return bot.sendMessage(chatId, `Got it! Do you want to Publish this post immediately, or save it as a Draft?`, statusKeyboard);
+            }
+            else if (uState.step === 'status') {
+                if (text === 'Cancel') return resetMenu(chatId, activeSite.wpUrl);
+                
+                let postStatus = 'publish';
+                if (text === 'Save to Drafts') postStatus = 'draft';
+                else if (text !== 'Publish Now') return bot.sendMessage(chatId, "Please use the keyboard buttons below to select Publish Now or Save to Drafts.");
+                
+                await bot.sendMessage(chatId, `⏳ Creating post on <b>${activeSite.wpUrl}</b> as ${postStatus}...`, { parse_mode: 'HTML' });
                 
                 let featuredMediaId = null;
-                if (mediaBuffer) {
+                if (uState.mediaBuffer) {
                     await bot.sendMessage(chatId, `📸 Uploading requested media attachment...`);
-                    featuredMediaId = await uploadMedia(activeSite, mediaBuffer, `image-${Date.now()}.${fileExt}`, mimeType);
+                    featuredMediaId = await uploadMedia(activeSite, uState.mediaBuffer, `image-${Date.now()}.${uState.fileExt}`, uState.mimeType);
                 }
                 
                 try {
-                    const htmlContent = finalContent ? marked.parse(finalContent) : " ";
-                    const post = await createPost(activeSite, uState.title, htmlContent, "publish", featuredMediaId);
-                    await bot.sendMessage(chatId, `✅ <b>Post created successfully!</b>\n<b>ID:</b> ${post.id}\n\n${post.link}`, { parse_mode: 'HTML' });
+                    const htmlContent = uState.content ? marked.parse(uState.content) : " ";
+                    const post = await createPost(activeSite, uState.title, htmlContent, postStatus, featuredMediaId);
+                    await bot.sendMessage(chatId, `✅ <b>Post created successfully!</b> (${postStatus})\n<b>ID:</b> ${post.id}\n\n${post.link}`, { parse_mode: 'HTML' });
                 } catch(e) {
                     await bot.sendMessage(chatId, `❌ Error creating post: ${e.message}`);
                 }
@@ -255,10 +283,35 @@ bot.on('message', async (msg) => {
                 let finalContent = uploadedText || text || '';
                 finalContent = finalContent.toLowerCase() === 'skip' ? null : finalContent;
                 
+                uState.content = finalContent;
+                uState.step = 'status';
+                
+                const statusKeyboard = {
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: 'Publish Now' }, { text: 'Save to Drafts' }],
+                            [{ text: 'Keep Existing Status' }],
+                            [{ text: 'Cancel' }]
+                        ],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                };
+                return bot.sendMessage(chatId, `Almost done! What should the final status be for this post?`, statusKeyboard);
+            }
+            else if (uState.step === 'status') {
+                if (text === 'Cancel') return resetMenu(chatId, activeSite.wpUrl);
+                
+                let postStatus = null;
+                if (text === 'Publish Now') postStatus = 'publish';
+                else if (text === 'Save to Drafts') postStatus = 'draft';
+                else if (text !== 'Keep Existing Status') return bot.sendMessage(chatId, "Please use the keyboard buttons below to select the status.");
+                
                 await bot.sendMessage(chatId, `⏳ Updating post ID ${uState.postId} on <b>${activeSite.wpUrl}</b>...`, { parse_mode: 'HTML' });
                 try {
-                    const htmlContent = finalContent ? marked.parse(finalContent) : null;
-                    const post = await updatePost(activeSite, uState.postId, uState.title, htmlContent, null);
+                    const htmlContent = uState.content ? marked.parse(uState.content) : null;
+                    const post = await updatePost(activeSite, uState.postId, uState.title, htmlContent, postStatus);
                     await bot.sendMessage(chatId, `✅ <b>Post updated successfully!</b>\n\n${post.link}`, { parse_mode: 'HTML' });
                 } catch(e) {
                     await bot.sendMessage(chatId, `❌ Error updating post: ${e.message}`);

@@ -16,13 +16,7 @@ Here are the top three strategies for success:
 
 ### Example Code Snippet:
 
-```javascript
-// This is a code block inside markdown!
-function optimizePerformance() {
-    console.log("Loading modules optimally...");
-    return true;
-}
-```
+
 
 ## 2. Design Aesthetics
 
